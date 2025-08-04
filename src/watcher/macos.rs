@@ -5,6 +5,12 @@
 #[cfg(target_os = "macos")]
 use crate::device_info::{DeviceEventType, DeviceHandle, UsbDeviceInfo};
 #[cfg(target_os = "macos")]
+use core_foundation::base::CFRelease;
+#[cfg(target_os = "macos")]
+use core_foundation::number::{kCFNumberSInt16Type, CFNumberGetValue, CFNumberRef};
+#[cfg(target_os = "macos")]
+use core_foundation::string::{CFString, CFStringRef};
+#[cfg(target_os = "macos")]
 use io_kit_sys::types::*;
 #[cfg(target_os = "macos")]
 use io_kit_sys::*;
@@ -61,7 +67,8 @@ impl MacosUsbWatcher {
                 if device == 0 {
                     break;
                 }
-                // Example: get device name
+
+                // Get device name
                 let mut device_name_buf = [0i8; 128];
                 let kr = IORegistryEntryGetName(device, device_name_buf.as_mut_ptr());
                 let device_name = if kr == 0 {
@@ -72,12 +79,25 @@ impl MacosUsbWatcher {
                     "Unknown USB Device".to_string()
                 };
 
-                // TODO: Get vendor/product/serial info from properties
+                // Extract vendor and product IDs from device properties
+                let vendor_id = self
+                    .get_device_property_u16(device, b"idVendor\0")
+                    .map(|id| format!("{:04x}", id))
+                    .unwrap_or_else(|| "0000".to_string());
+
+                let product_id = self
+                    .get_device_property_u16(device, b"idProduct\0")
+                    .map(|id| format!("{:04x}", id))
+                    .unwrap_or_else(|| "0000".to_string());
+
+                // Try to get serial number
+                let serial_number = self.get_device_property_string(device, b"USB Serial Number\0");
+
                 let info = UsbDeviceInfo {
                     device_name,
-                    vendor_id: "unknown".to_string(),
-                    product_id: "unknown".to_string(),
-                    serial_number: None,
+                    vendor_id,
+                    product_id,
+                    serial_number,
                     timestamp: chrono::Utc::now(),
                     event_type: DeviceEventType::Connected,
                     device_handle: DeviceHandle::Macos {
@@ -90,5 +110,77 @@ impl MacosUsbWatcher {
             IOObjectRelease(iter);
         }
         Ok(())
+    }
+
+    /// Helper function to get a 16-bit integer property from an IOKit device
+    unsafe fn get_device_property_u16(
+        &self,
+        device: io_object_t,
+        property_name: &[u8],
+    ) -> Option<u16> {
+        let prop_name = core_foundation::string::CFString::from_static_string(
+            std::str::from_utf8(property_name)
+                .ok()?
+                .trim_end_matches('\0'),
+        );
+        let prop = IORegistryEntryCreateCFProperty(
+            device,
+            prop_name.as_concrete_TypeRef(),
+            std::ptr::null_mut(),
+            0,
+        );
+
+        if prop.is_null() {
+            return None;
+        }
+
+        // Convert CFNumber to u16
+        let cf_number = prop as core_foundation::number::CFNumberRef;
+        let mut value: u16 = 0;
+        if core_foundation::number::CFNumberGetValue(
+            cf_number,
+            core_foundation::number::kCFNumberSInt16Type,
+            &mut value as *mut u16 as *mut std::ffi::c_void,
+        ) {
+            core_foundation::base::CFRelease(prop);
+            Some(value)
+        } else {
+            core_foundation::base::CFRelease(prop);
+            None
+        }
+    }
+
+    /// Helper function to get a string property from an IOKit device
+    unsafe fn get_device_property_string(
+        &self,
+        device: io_object_t,
+        property_name: &[u8],
+    ) -> Option<String> {
+        let prop_name = core_foundation::string::CFString::from_static_string(
+            std::str::from_utf8(property_name)
+                .ok()?
+                .trim_end_matches('\0'),
+        );
+        let prop = IORegistryEntryCreateCFProperty(
+            device,
+            prop_name.as_concrete_TypeRef(),
+            std::ptr::null_mut(),
+            0,
+        );
+
+        if prop.is_null() {
+            return None;
+        }
+
+        // Convert CFString to Rust String
+        let cf_string = prop as core_foundation::string::CFStringRef;
+        let rust_string =
+            core_foundation::string::CFString::wrap_under_create_rule(cf_string).to_string();
+
+        if rust_string.is_empty() {
+            None
+        } else {
+            Some(rust_string)
+        }
     }
 }
