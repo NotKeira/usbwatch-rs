@@ -1,7 +1,10 @@
 //!
 //! Windows-specific USB device watcher implementation.
 //!
-//! Device handles will be provided for each detected device in future versions.
+//! This implementation uses Unicode (UTF-16) Windows APIs to properly handle
+//! international characters in device names and descriptions. This ensures
+//! devices with non-ASCII names (Chinese, Japanese, accented characters, etc.)
+//! are displayed correctly instead of showing garbled text.
 //!
 #[cfg(target_os = "windows")]
 use crate::device_info::{DeviceEventType, DeviceHandle, UsbDeviceInfo};
@@ -10,7 +13,7 @@ use std::collections::HashSet;
 #[cfg(target_os = "windows")]
 use tokio::sync::mpsc;
 #[cfg(target_os = "windows")]
-use windows::{core::*, Win32::Devices::DeviceAndDriverInstallation::*};
+use windows::{core::*, Win32::Devices::DeviceAndDriverInstallation::*, Win32::Foundation::PWSTR};
 
 #[cfg(target_os = "windows")]
 pub struct WindowsUsbWatcher {
@@ -88,8 +91,8 @@ impl WindowsUsbWatcher {
             // Get USB device class GUID
             let mut class_guid_buffer = [GUID::default(); 1];
             let mut required_size = 0u32;
-            if SetupDiClassGuidsFromNameA(
-                windows::core::s!("USB"),
+            if SetupDiClassGuidsFromNameW(
+                &HSTRING::from("USB"),
                 &mut class_guid_buffer,
                 &mut required_size,
             )
@@ -101,7 +104,7 @@ impl WindowsUsbWatcher {
 
             // Get device information set
             let device_info_set =
-                SetupDiGetClassDevsA(Some(&class_guid), PCSTR::null(), None, DIGCF_PRESENT)
+                SetupDiGetClassDevsW(Some(&class_guid), PCWSTR::null(), None, DIGCF_PRESENT)
                     .map_err(|e| format!("Failed to get device info set: {}", e))?;
 
             if device_info_set.is_invalid() {
@@ -166,6 +169,11 @@ impl WindowsUsbWatcher {
         ))
     }
 
+    /// Gets a device property from the Windows registry.
+    ///
+    /// Uses the Unicode (UTF-16) Windows API to properly handle international
+    /// characters in device names and descriptions. This is important for
+    /// devices with non-ASCII names (e.g., Chinese, Japanese, or accented characters).
     fn get_device_property(
         &self,
         device_info_set: HDEVINFO,
@@ -176,8 +184,8 @@ impl WindowsUsbWatcher {
             let mut required_size = 0u32;
             let mut property_type = 0u32;
 
-            // Get required buffer size
-            let _ = SetupDiGetDeviceRegistryPropertyA(
+            // Get required buffer size using Unicode API
+            let _ = SetupDiGetDeviceRegistryPropertyW(
                 device_info_set,
                 device_info_data,
                 property,
@@ -190,21 +198,33 @@ impl WindowsUsbWatcher {
                 return None;
             }
 
-            let mut buffer = vec![0u8; required_size as usize];
-            if SetupDiGetDeviceRegistryPropertyA(
+            // Allocate buffer for UTF-16 data (required_size is in bytes, so divide by 2 for u16 count)
+            let utf16_len = (required_size as usize + 1) / 2; // +1 to handle odd byte counts
+            let mut utf16_buffer = vec![0u16; utf16_len];
+            let buffer_bytes = std::slice::from_raw_parts_mut(
+                utf16_buffer.as_mut_ptr() as *mut u8,
+                required_size as usize,
+            );
+
+            if SetupDiGetDeviceRegistryPropertyW(
                 device_info_set,
                 device_info_data,
                 property,
                 Some(&mut property_type),
-                Some(buffer.as_mut_slice()),
+                Some(buffer_bytes),
                 Some(&mut required_size),
             )
             .is_ok()
             {
-                // Convert to string, removing null terminators
-                let result = String::from_utf8_lossy(&buffer)
-                    .trim_end_matches('\0')
-                    .to_string();
+                // Find the actual end of the string (before null terminator)
+                let actual_len = utf16_buffer
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(utf16_buffer.len());
+
+                // Convert UTF-16 to String, handling international characters properly
+                let result = String::from_utf16_lossy(&utf16_buffer[..actual_len]);
+
                 if !result.is_empty() {
                     Some(result)
                 } else {
