@@ -10,7 +10,7 @@
 //! - **Real-time monitoring**: Detect USB events as they happen
 //! - **Multiple output formats**: Plain text and JSON
 //! - **File logging**: Save events to log files
-//! - **Colored output**: Modern, readable CLI output
+//! - **Coloured output**: Modern, readable CLI output
 //! - **Async/await support**: Built with Tokio for efficient I/O
 //! - **Device handle traits**: Access platform-specific device handles for advanced operations
 //! - **Install/uninstall commands**: Manage CLI tool from the command line
@@ -29,7 +29,7 @@
 //! # Monitor and log to file
 //! usbwatch --logfile usb-events.log
 //!
-//! # Monitor with colored output (default if supported)
+//! # Monitor with coloured output (default if supported)
 //! usbwatch
 //!
 //! # Install or uninstall the CLI tool

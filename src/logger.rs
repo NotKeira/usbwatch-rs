@@ -1,11 +1,11 @@
 //! Event logging and output formatting for USB device monitoring.
 //!
-//! Provides modern, colored, and structured output for USB device events in both plain text and JSON formats.
-//! Supports logging to files and the console, with automatic color detection for terminals.
+//! Provides modern, coloured, and structured output for USB device events in both plain text and JSON formats.
+//! Supports logging to files and the console, with automatic colour detection for terminals.
 //!
 //! ## Features
 //!
-//! - Colored output using the `colored` crate
+//! - Coloured output using the `colored` crate
 //! - JSON and plain text output
 //! - File logging
 //! - Configurable via CLI options
@@ -33,6 +33,7 @@ impl Logger {
     ///
     /// * `output_json` - Whether to format output as JSON
     /// * `log_file_path` - Optional path to a log file
+    /// * `colorful` - Whether to use coloured output (ignored for JSON mode)
     ///
     /// # Errors
     ///
@@ -43,7 +44,7 @@ impl Logger {
     /// ```
     /// use usbwatch_rs::logger::Logger;
     ///
-    /// // Console-only logger with plain text
+    /// // Console-only logger with plain text and colours
     /// let logger = Logger::new(false, None, true)?;
     ///
     /// // JSON logger with file output
