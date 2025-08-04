@@ -3,9 +3,9 @@ use crate::device_info::{DeviceEventType, DeviceHandle, UsbDeviceInfo};
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
-use std::fs;
-#[cfg(target_os = "linux")]
 use std::path::Path;
+#[cfg(target_os = "linux")]
+use tokio::fs;
 #[cfg(target_os = "linux")]
 use tokio::sync::mpsc;
 
@@ -60,8 +60,11 @@ impl LinuxUsbWatcher {
 
         // Simple polling approach - check /sys/bus/usb/devices periodically
         let mut known_devices: HashMap<String, UsbDeviceInfo> = HashMap::new();
+        let mut poll_interval = tokio::time::Duration::from_secs(1); // Start with 1s, adapt based on activity
 
         loop {
+            let scan_start = std::time::Instant::now();
+
             match self.scan_usb_devices().await {
                 Ok(current_devices) => {
                     let current_map: HashMap<String, UsbDeviceInfo> = current_devices
@@ -77,6 +80,8 @@ impl LinuxUsbWatcher {
                         })
                         .collect();
 
+                    let mut events_sent = 0;
+
                     // Check for new devices (connected)
                     for (key, device) in &current_map {
                         if !known_devices.contains_key(key) {
@@ -84,6 +89,8 @@ impl LinuxUsbWatcher {
                             device_clone.event_type = DeviceEventType::Connected;
                             if let Err(e) = self.tx.send(device_clone).await {
                                 eprintln!("Failed to send device event: {e}");
+                            } else {
+                                events_sent += 1;
                             }
                         }
                     }
@@ -95,18 +102,38 @@ impl LinuxUsbWatcher {
                             device_clone.event_type = DeviceEventType::Disconnected;
                             if let Err(e) = self.tx.send(device_clone).await {
                                 eprintln!("Failed to send device event: {e}");
+                            } else {
+                                events_sent += 1;
                             }
                         }
                     }
 
                     known_devices = current_map;
+
+                    // Adaptive polling: reduce interval if there's activity, increase if idle
+                    if events_sent > 0 {
+                        poll_interval = tokio::time::Duration::from_millis(500);
+                    // Fast polling when active
+                    } else {
+                        poll_interval = std::cmp::min(
+                            poll_interval + tokio::time::Duration::from_millis(100),
+                            tokio::time::Duration::from_secs(5), // Max 5 seconds when idle
+                        );
+                    }
                 }
                 Err(e) => {
                     eprintln!("Error scanning USB devices: {e}");
+                    // Use exponential backoff on errors
+                    poll_interval =
+                        std::cmp::min(poll_interval * 2, tokio::time::Duration::from_secs(10));
                 }
             }
 
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            // Ensure we don't scan too frequently
+            let scan_duration = scan_start.elapsed();
+            if scan_duration < poll_interval {
+                tokio::time::sleep(poll_interval - scan_duration).await;
+            }
         }
     }
 
@@ -121,10 +148,11 @@ impl LinuxUsbWatcher {
             );
         }
 
-        let entries = fs::read_dir(usb_devices_path).map_err(|e| e.to_string())?;
+        let mut entries = fs::read_dir(usb_devices_path)
+            .await
+            .map_err(|e| e.to_string())?;
 
-        for entry in entries {
-            let entry = entry.map_err(|e| e.to_string())?;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| e.to_string())? {
             let path = entry.path();
 
             // Skip entries that don't look like USB devices (e.g., usb1, usb2, etc.)
@@ -156,18 +184,22 @@ impl LinuxUsbWatcher {
     async fn parse_usb_device(&self, device_path: &Path) -> Result<UsbDeviceInfo, String> {
         let vendor_id = self
             .read_sys_file(device_path, "idVendor")
+            .await
             .unwrap_or_else(|| "0000".to_string());
         let product_id = self
             .read_sys_file(device_path, "idProduct")
+            .await
             .unwrap_or_else(|| "0000".to_string());
 
         let product_name = self
             .read_sys_file(device_path, "product")
+            .await
             .unwrap_or_else(|| "Unknown Device".to_string());
         let manufacturer = self
             .read_sys_file(device_path, "manufacturer")
+            .await
             .unwrap_or_default();
-        let serial_number = self.read_sys_file(device_path, "serial");
+        let serial_number = self.read_sys_file(device_path, "serial").await;
 
         let device_name = if !manufacturer.is_empty() && !product_name.is_empty() {
             format!("{manufacturer} {product_name}")
@@ -191,9 +223,10 @@ impl LinuxUsbWatcher {
             device_handle,
         ))
     }
-    fn read_sys_file(&self, device_path: &Path, filename: &str) -> Option<String> {
+    async fn read_sys_file(&self, device_path: &Path, filename: &str) -> Option<String> {
         let file_path = device_path.join(filename);
         fs::read_to_string(file_path)
+            .await
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
