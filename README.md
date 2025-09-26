@@ -124,4 +124,3 @@ USBWatch is designed to be lightweight and efficient:
 - Low memory footprint
 - Configurable polling intervals
 - No blocking operations in the main thread
-```
