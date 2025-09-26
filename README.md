@@ -93,8 +93,6 @@ Starting USB device monitoring on Linux...
 }
 ```
 
-```
-
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
